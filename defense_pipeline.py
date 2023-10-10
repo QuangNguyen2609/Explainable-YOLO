@@ -39,6 +39,7 @@ parser.add_argument('--img-path', type=str, default='images/', help='input image
 parser.add_argument('--output-dir', type=str, default='outputs', help='output dir')
 parser.add_argument('--img-size', type=int, default=960, help="input image size")
 parser.add_argument('--mask-threshold', type=float, default=0.5, help="CAM mask threshold")
+parser.add_argument('--topk', type=int, default=25, help="number of gbp values to choose")
 parser.add_argument('--target-layer', type=str, default='model_23_cv3_act',
                     help='The layer hierarchical address to which gradcam will applied,'
                          ' the names should be separated by underline')
@@ -255,6 +256,7 @@ def folder_main(folder_path):
         saliency_method = YOLOV5GradCAMPlusPlus(model=model, layer_name=args.target_layer, img_size=input_size)
     else:
         saliency_method = GuidedBackpropReLUModel(model=model, layer_name=args.target_layer, img_size=input_size)
+        topk = args.topk
         
     for item in os.listdir(folder_path):
         img_path = os.path.join(folder_path, item)
@@ -279,18 +281,27 @@ def folder_main(folder_path):
             print("[INFO] No object detected")
             continue
         for i, mask in enumerate(masks):
-            mask = mask[0].squeeze(0).detach().cpu().numpy()
-            mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
-            # mask_cond = mask >= args.mask_threshold
-            mask_cond = (mask >= 0.001)
-            mask = mask_cond.astype(int)
-            print("[INFO] MASK: ",mask)
-            res_img = result.copy()
             bbox, cls_name = boxes[0][i], class_names[0][i]
             x1, y1, x2, y2 = bbox
-            RoI = res_img[x1:x2, y1:y2]
-            mask_roi = mask[x1:x2, y1:y2]
-            # res_img, heat_map = get_res_img(bbox, mask, res_img)
+            mask = mask[0].squeeze(0).detach().cpu().numpy()
+            res_img = result.copy()
+            if args.method == 'gbp':
+                mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
+                mask *= 10
+                top_points = np.argpartition(mask.flatten(), -topk)[-topk:]
+                top_points = np.unravel_index(top_points, mask.shape)
+                mask_roi = np.zeros_like(mask)
+                cv2.imwrite("gbp_mask.png", mask_roi*255)
+                for i in range(len(top_points[0])):
+                    y, x = top_points[0][i], top_points[1][i]
+                    mask_roi[y-10:y+10, x-10:x+10] = 1
+                mask_roi = mask_roi[x1:x2, y1:y2]
+                RoI = res_img[x1:x2, y1:y2]
+            else:
+                mask_cond = mask >= args.mask_threshold
+                mask = mask_cond.astype(int)
+                RoI = res_img[x1:x2, y1:y2]
+                mask_roi = mask[x1:x2, y1:y2]
             cv2.imwrite(f"{indir}/single_mask.png", mask_roi*255) # GBP mask
             cv2.imwrite(f"{indir}/single.png", RoI)
             predict()
@@ -300,10 +311,10 @@ def folder_main(folder_path):
         img_name = split_extension(os.path.split(img_path)[-1], suffix='-res')
         output_path = f'{args.output_dir}/{img_name}'
         os.makedirs(args.output_dir, exist_ok=True)
-        print(f'[INFO] Saving the final image at {output_path}')
+        # print(f'[INFO] Saving the final image at {output_path}')
         cv2.imwrite(output_path, res_img)
         # del torch_img, masks, logits, boxes, class_names, result, img, mask, mask_cond, mask_roi, RoI, clean_RoI, model, saliency_method
-        print("[DEBUG] cuda memory after del ", torch.cuda.memory_allocated()/10**8)
+        # print("[DEBUG] cuda memory after del ", torch.cuda.memory_allocated()/10**8)
 
 if __name__ == '__main__':
     if os.path.isdir(args.img_path):
